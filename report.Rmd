@@ -1,0 +1,151 @@
+---
+title: "Human Activity Recognition (PML Assignment)"
+author: "Ping Chu Hung"
+date: "2015-11-19"
+output: html_document
+---
+
+## Synopsis
+
+The purpose of this project is to predict how well an activity was performed. Data is from accelerometers on the belt, forearm, arm, and dumbell. Six young health participants were asked to perform one set of 10 repetitions of the Unilateral Dumbbell Biceps Curl in five different fashions (marked as class A, B, C, D, and E). Class A represents exact action according to the specification. Classes B, C, D, and E represent sorts of common mistakes.
+
+We have two data sets from Weight Lifting Exercises Dataset. One is training data with correct classes (A to E), and the other is testing data without classes. The testing data is used for final examination of our prediction algorithm.
+
+
+## Data Processing
+
+### System Environment
+
+```{r}
+sessionInfo()
+```
+```{r, message=FALSE}
+require(caret)
+require(dplyr)
+require(adabag)
+```
+
+
+### Download Data
+
+The training data is available [here](https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv). The testing data is available [here](https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv).
+
+```{r}
+if (!file.exists("pml-training.csv")) {
+    download.file("https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv", "pml-training.csv")
+}
+if (!file.exists("pml-testing.csv")) {
+    download.file("https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv", "pml-testing.csv")
+}
+```
+
+
+### Data Overview
+
+```{r}
+origTrain <- read.csv("pml-training.csv")
+finalTest <- read.csv("pml-testing.csv")
+dim(origTrain)
+dim(finalTest)
+```
+
+There are about twenty thousand samples in training data. Each sample contains 160 features. We found that first five features (`X`, `user_name`, `raw_timestamp_part_1`, `raw_timestamp_part_2`, `cvtd_timestamp`) are only timestamps and serial numbers.
+
+```{r}
+table(sapply(origTrain, function(x) class(x)))
+```
+
+Most features are numeric, but some features are integer or factor.
+
+```{r}
+as.vector(colSums(is.na(origTrain)))
+```
+
+Surprisingly, there are a lot of features contain only NAs.
+
+
+### Preprocessing Data
+
+```{r}
+NearZeroFeature <- nearZeroVar(origTrain)
+UselessFeature <- 1:5
+NAFeature <- as.vector(which(colSums(is.na(origTrain)) > 10000))
+exclude <- union(union(NearZeroFeature, UselessFeature), NAFeature)
+```
+
+There are three ways to reduce number of features.
+
+1. We use `nearZeroVar` function to select features whose variance is near zero.
+2. In Data Overview section, we found first five features are useless for prediction.
+3. Features contain only NAs will be removed.
+
+```{r}
+table(sapply(origTrain[,-exclude], function(x) class(x)))
+```
+
+After feature removal, all factor features and lots of numeric features are removed. `exclude` are the columns to be ignored.
+
+
+## Model Building
+
+### Split Data
+
+The training data is separated into two parts, 80% samples are used for training and cross-validation, the others are used for testing.
+
+```{r}
+set.seed(1234)
+inTrain <- createDataPartition(origTrain$classe, p=0.8, list=FALSE)
+train.set <- origTrain[inTrain,]
+test.set <- origTrain[-inTrain,]
+```
+
+
+### Model Selection
+
+AdaBoost is a kind of boosting methods. It is simple to implement and not prone to overfitting. The basic idea of AdaBoost is combining simple weak classifiers to construct a strong classifier. There are a ton of variants of AdaBoost algorithms. We choose Adaboost.M1 from package `adabag`.
+
+`boosting.cv` is used for cross-validation. The parameter `v=10` means 10-folds cross-validation. `train.set` is separated into ten parts. Each time nine parts is used for training and one part is used for evaluation. Finally we have the average error of ten times of training.
+
+Cross-validation is used to select the most important parameter `mfinal`, the number of iterations for which boosting is run. For `mfinal=10` to `mfinal=50`, the cv-error is calculated.
+
+```{r, cache=TRUE, results='hide'}
+err <- sapply(1:5*10, function(mf) {
+	set.seed(1234)
+	boosting.cv(classe ~ ., train.set[,-exclude], mfinal = mf, v = 10)$error 
+})
+```
+
+```{r}
+qplot(1:5*10, err, geom = "line", xlab = "mfinal", ylab = "Error")
+```
+
+This plot is the cv-error of `mfinal=10,20,30,40,50`. We can say the cv-error hits lowest point after `mfinal=30`.
+
+
+### Training
+
+We choose `mfinal=30` to train 80% of data. Then use the model to predict 20% of data (`test.set`).
+
+```{r, cache=TRUE}
+set.seed(1234)
+fit <- boosting(classe ~ ., train.set[,-exclude], mfinal = 30)
+pred <- predict.boosting(fit, newdata=test.set) 
+confusion <- confusionMatrix(pred$class, test.set$classe)
+```
+
+
+```{r}
+confusion
+```
+
+Because `test.set` and `train.set` are independent data sets, the error on `test.set` should be near out of sample error. We expect the out of sample error is `r 1-confusion$overall["Accuracy"]` and the 95% confidence-interval is (`r 1-confusion$overall["AccuracyUpper"]`, `r 1-confusion$overall["AccuracyLower"]`).
+
+
+## Final Test
+
+We use the mode to predict `finalTest` data set from `pml-testing.csv`. After submitting the answers, all answers are correct from online-judging.
+
+```{r}
+answers <- predict.boosting(fit, finalTest)$class
+answers
+```
